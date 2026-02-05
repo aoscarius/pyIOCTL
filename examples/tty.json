@@ -1,0 +1,46 @@
+{
+    "TIOCGWINSZ": {
+        "mode": "R",
+        "type": "T",
+        "nr": 19,
+        "format": "HHHH",
+        "fields": [
+            "ws_row",
+            "ws_col",
+            "ws_xpixel",
+            "ws_ypixel"
+        ]
+    },
+    "TCGETS": {
+        "mode": "R",
+        "type": "T",
+        "nr": 1,
+        "format": "IIIIB32BII",
+        "fields": [
+            "c_iflag",
+            "c_oflag",
+            "c_cflag",
+            "c_lflag",
+            "c_line",
+            "c_cc",
+            "c_ispeed",
+            "c_ospeed"
+        ]
+    },
+    "TIOCMGET": {
+        "mode": "R",
+        "type": "T",
+        "nr": 21,
+        "format": "I",
+        "fields": [
+            "arg"
+        ]
+    },
+    "TCSBRK": {
+        "mode": "N",
+        "type": "T",
+        "nr": 9,
+        "format": "",
+        "fields": []
+    }
+}

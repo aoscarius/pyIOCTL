@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+
+# This script converts C header files into JSON format for IOCTL definitions
+# Example: python3 h2json examples/tty.h tty.json
+
+import re
+import json
+import argparse
+import struct
+
+# Mapping C types to Python 'struct' module format characters
+TYPE_MAP = {
+    # 1 Byte: Booleans and Characters
+    'bool': '?',        'char': 'b',        'int8_t': 'b',      'i8': 'b',
+    'uint8_t': 'B',     'u8': 'B',          'unsigned char': 'B',
+
+    # 2 Bytes: Shorts and 16-bit Integers
+    'short': 'h',       'int16_t': 'h',     'i16': 'h',         'unsigned short': 'H',
+    'uint16_t': 'H',    'u16': 'H',         'wchar_t': 'u',
+
+    # 4 Bytes: Integers, Floats and Sizes
+    'int': 'i',         'int32_t': 'i',     'i32': 'i',         'unsigned int': 'I',
+    'uint32_t': 'I',    'u32': 'I',         'size_t': 'I',      'ssize_t': 'i',
+    'float': 'f',       'void': 'I',
+
+    # 4-8 Bytes: Platform dependent (Longs)
+    'long': 'l',        'unsigned long': 'L',
+
+    # 8 Bytes: Long Longs, 64-bit Integers and Doubles
+    'long long': 'q',   'int64_t': 'q',     'i64': 'q',         'unsigned long long': 'Q',
+    'uint64_t': 'Q',    'u64': 'Q',         'double': 'd',
+
+    # Pointers: Architecture dependent (Native size)
+    'void *': 'P',      'char *': 'P',      'int *': 'P',       'uint64_t *': 'P',
+    'int64_t *': 'P',   'uint32_t *': 'P',  'int32_t *': 'P',   'uint16_t *': 'P',
+    'int16_t *': 'P',   'uint8_t *': 'P',   'int8_t *': 'P',    'char **': 'P',
+    'void **': 'P',     'unsigned char *': 'P', 'unsigned int *': 'P'
+}
+
+def parse_header(content):
+    # Resolve #defines for constants (Magic/NR/Array Sizes)
+    defines = {}
+    for match in re.finditer(r'#define\s+(\w+)\s+([\'\w\d]+)', content):
+        name, val = match.groups()
+        defines[name] = val.replace("'", "")
+
+    # Extract structs
+    structs = {}
+    struct_pattern = re.compile(r'(?:typedef\s+)?struct(?:\s+(\w+))?\s*\{([^}]+)\}\s*(\w+)?;')
+    
+    for match in struct_pattern.finditer(content):
+        name_start, body, name_end = match.groups()
+        struct_name = name_end if name_end else name_start
+        if not struct_name: continue
+
+        fields = []
+        fmt = ""
+        for line in body.split(';'):
+            line = line.strip()
+            line = re.sub(r'/\*.*?\*/|//.*', '', line)
+            if not line: continue
+            
+            # ARRAY LOGIC: Detect type name[size_or_constant]
+            m_array = re.search(r'(.+?)\s+(\w+)\[(\w+)\]$', line)
+            if m_array:
+                c_type, f_name, size_key = m_array.groups()
+                # Resolve size: check if it's a known #define, else assume it's a literal number
+                size = defines.get(size_key, size_key)
+                fields.append(f_name.strip())
+                base_type = TYPE_MAP.get(c_type.strip(), 'B')
+                fmt += f"{size}{base_type}"
+                continue
+
+            # SINGLE FIELD LOGIC: Detect type name
+            m_field = re.search(r'(.+?)\s+(\w+)$', line)
+            if m_field:
+                c_type, f_name = m_field.groups()
+                fields.append(f_name.strip())
+                fmt += TYPE_MAP.get(c_type.strip(), 'I')
+        
+        structs[struct_name] = {"format": fmt, "fields": fields}
+
+    # 3. Extract IOCTL definitions
+    pattern_3 = re.compile(r'#define\s+(\w+)\s+_IO(WR|R|W)\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\)')
+    pattern_2 = re.compile(r'#define\s+(\w+)\s+_IO\s*\(\s*([^,]+)\s*,\s*([^)]+)\)')
+    
+    results = {}
+
+    # Handle 3-args IOCTLs
+    for match in pattern_3.finditer(content):
+        name, mode, magic, nr, data_type = match.groups()
+        magic_val = defines.get(magic.strip(), magic.strip()).replace("'", "")
+        clean_type = data_type.replace('struct ', '').strip()
+        struct_info = structs.get(clean_type, {"format": "I", "fields": ["arg"]})
+        
+        results[name] = {
+            "mode": mode,
+            "type": magic_val,
+            "nr": int(nr.strip()),
+            "format": struct_info["format"],
+            "fields": struct_info["fields"]
+        }
+
+    # Handle 2-args IOCTLs (_IO)
+    for match in pattern_2.finditer(content):
+        name, magic, nr = match.groups()
+        magic_val = defines.get(magic.strip(), magic.strip()).replace("'", "")
+        results[name] = {
+            "mode": "N", 
+            "type": magic_val, 
+            "nr": int(nr.strip()), 
+            "format": "", 
+            "fields": []
+        }
+
+    return results
+
+def main():
+    parser = argparse.ArgumentParser(description="C Header to IOCTL JSON converter with detailed logging")
+    parser.add_argument("input", help="Input .h file")
+    parser.add_argument("output", help="Output .json file")
+    args = parser.parse_args()
+
+    try:
+        with open(args.input, 'r') as f:
+            content = f.read()
+        
+        data = parse_header(content)
+        
+        if not data:
+            print("[!] No IOCTLs found. Check your macro definitions.")
+        else:
+            with open(args.output, 'w') as f:
+                json.dump(data, f, indent=4)
+            
+
+            print("Found:")
+            for name, info in data.items():
+                params_str = ", ".join(info['fields']) if info['fields'] else "none"
+                print(f"  - {name:<40}")
+                print(f"    args: {params_str}")
+            
+            print(f"[+] Total: {len(data)} IOCTLs identified.")
+            print(f"[+] Saved to: {args.output}\n")
+            
+    except Exception as e:
+        print(f"[!] Error during parsing: {e}")
+
+if __name__ == "__main__":
+    main()

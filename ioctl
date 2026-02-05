@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+
+# This script performs IOCTL operations on a device using a JSON configuration file
+# Example: python3 ioctl /dev/custom --config example/custom.json call IOCTL_SET_FORMAT mode0 1920 1080
+
+import fcntl
+import os
+import sys
+import struct
+import argparse
+import json
+import re
+
+def make_ioctl_code(mode, type_char, nr, size):
+    """Computes the IOCTL number using standard Linux bitmasking logic."""
+    direction = {'N': 0, 'W': 1, 'R': 2, 'WR': 3}.get(mode.upper(), 0)
+    return (direction << 30) | (size << 16) | (ord(type_char) << 8) | nr
+
+def hex_dump(data):
+    """Generates a C-style hex dump."""
+    return " ".join(f"{b:02x}" for b in data)
+
+def load_definitions(file_path):
+    """Loads IOCTL and struct definitions from a JSON file."""
+    try:
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[!] Error loading JSON configuration: {e}")
+        sys.exit(1)
+
+def main():
+    parser = argparse.ArgumentParser(description="Universal IOCTL Tester")
+    parser.add_argument("device", help="Device path (e.g. /dev/mydev)")
+    parser.add_argument("--config", required=True, dest="config_file", help="Path to JSON configuration file")
+    
+    # Command subparsers
+    subparsers = parser.add_subparsers(dest="cmd_mode", required=True)
+    
+    # 'call' mode
+    call_p = subparsers.add_parser("call", help="Call a defined IOCTL by name")
+    call_p.add_argument("name", help="IOCTL name from JSON")
+    call_p.add_argument("params", nargs='*', help="Values for the struct fields")
+
+    # 'raw' mode
+    raw_p = subparsers.add_parser("raw", help="Manual hex code access")
+    raw_p.add_argument("code", type=lambda x: int(x, 0))
+    raw_p.add_argument("size", type=int)
+
+    args = parser.parse_args()
+    definitions = load_definitions(args.config_file)
+
+    ioctl_code = 0
+    fmt = ""
+    fields = []
+    ioctl_name = ""
+    struct_size = 0
+
+    # Logic branch based on command
+    if args.cmd_mode == "call":
+        ioctl_name = args.name
+        if ioctl_name not in definitions:
+            print(f"[!] IOCTL '{ioctl_name}' not found in {args.config_file}")
+            return
+        
+        cfg = definitions[ioctl_name]
+        fmt = cfg.get('format', '')
+        fields = cfg.get('fields', [])
+        struct_size = struct.calcsize(fmt) if fmt else 0
+        ioctl_code = cfg.get('code')
+        
+        # Resolve IOCTL Code
+        if ioctl_code:
+            ioctl_code = int(ioctl_code, 0)
+        else:
+            ioctl_code = make_ioctl_code(cfg['mode'], cfg['type'], cfg['nr'], struct_size)
+            
+    elif args.cmd_mode == "raw":
+        ioctl_name = f"RAW_{hex(args.code)}"
+        ioctl_code = args.code
+        struct_size = args.size
+
+    # Buffer preparation
+    try:
+        if args.cmd_mode == "call" and args.params and fmt:
+            flat_types = []
+            format_parts = re.findall(r'(\d*)([a-zA-Z])', fmt)
+            for count, char in format_parts:
+                n = int(count) if count else 1
+                for _ in range(n): flat_types.append(char)
+
+            typed_params = []
+            for i, val in enumerate(args.params):
+                if i >= len(flat_types): break
+                c = flat_types[i]
+                if c in 'ifd': 
+                    typed_params.append(float(val))
+                else: 
+                    typed_params.append(int(val, 0))
+            buf = bytearray(struct.pack(fmt, *typed_params))
+        else:
+            buf = bytearray(struct_size)
+    except Exception as e:
+        print(f"[!] Data packing error: {e}")
+        return
+
+    print(f"[*] Target Device: {args.device}")
+    print(f"[*] Executing: {ioctl_name} ({hex(ioctl_code)})")
+    if buf: print(f"[*] Input Hex:  [{hex_dump(buf)}]")
+
+    # Execution phase
+    fd = -1
+    try:
+        fd = os.open(args.device, os.O_RDWR | os.O_NONBLOCK)
+        
+        # Perform the actual IOCTL
+        result = fcntl.ioctl(fd, ioctl_code, buf)
+        print(f"[+] Success. Kernel return value: {result}")
+
+        # Post-execution decoding
+        if fmt:
+            unpacked = struct.unpack(fmt, buf)
+            print("[+] Decoded Output Fields:")
+            val_idx = 0
+            format_parts = re.findall(r'(\d*)([a-zA-Z])', fmt)
+            for field_idx, (count, char) in enumerate(format_parts):
+                f_name = fields[field_idx] if field_idx < len(fields) else f"field_{field_idx}"
+                n = int(count) if count else 1
+                
+                if n > 1:
+                    array_vals = unpacked[val_idx : val_idx + n]
+                    if char == 'B':
+                        ascii_prev = "".join(chr(c) if 32 <= c <= 126 else '.' for c in array_vals)
+                        print(f"    -> {f_name} (Array[{n}]): {list(array_vals)} | ASCII: '{ascii_prev}'")
+                    else:
+                        print(f"    -> {f_name} (Array[{n}]): {list(array_vals)}")
+                    val_idx += n
+                else:
+                    val = unpacked[val_idx]
+                    print(f"    -> {f_name}: {val} ({hex(val) if isinstance(val, int) else val})")
+                    val_idx += 1
+        
+        if buf: print(f"[+] Final Hex:  [{hex_dump(buf)}]")
+
+    except Exception as e:
+        print(f"[!] IOCTL Error: {e}")
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+if __name__ == "__main__":
+    main()

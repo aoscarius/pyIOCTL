@@ -1,0 +1,24 @@
+{
+    "IOCTL_SET_FORMAT": {
+        "mode": "W",
+        "type": "C",
+        "nr": 1,
+        "format": "32BII",
+        "fields": [
+            "name",
+            "width",
+            "height"
+        ]
+    },
+    "IOCTL_GET_FORMAT": {
+        "mode": "R",
+        "type": "C",
+        "nr": 2,
+        "format": "32BII",
+        "fields": [
+            "name",
+            "width",
+            "height"
+        ]
+    }
+}
