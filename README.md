@@ -43,9 +43,12 @@ python3 ioctl /dev/mydev raw 0x80045467 8
 * _Non-Blocking I/O_: The executor opens devices in O_NONBLOCK mode to prevent the script from hanging on misconfigured hardware.
 
 ## Troubleshooting
-* _Size Mismatch_: If the kernel returns an error (Inval), check if your header uses __attribute__((packed)). If so, you may need to manually adjust the format in the JSON to match.
+* _Size Mismatch_: If the kernel returns an error (Inval), check if your header uses `__attribute__((packed))`. If so, you may need to manually adjust the format in the JSON to match.
 
 * _Unknown Types_: If the parser encounters a custom typedef not in the [`TYPE_MAP`](h2json), it defaults to a 32-bit integer (I). You can add custom types to the [`TYPE_MAP`](h2json) dictionary in [h2json](h2json).
+
+### TODOs:
+ - [ ] Add support for `__attribute__((packed))`
 
 ## Notes
 - Be cautious with device access and struct layouts; mismatched formats may crash kernels or drivers.

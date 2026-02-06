@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+# Author: Oscar Castello
+# License: MIT
+
 # This script performs IOCTL operations on a device using a JSON configuration file
 # Example: python3 ioctl /dev/custom --config example/custom.json call IOCTL_SET_FORMAT mode0 1920 1080
 
@@ -89,6 +92,9 @@ def main():
                 n = int(count) if count else 1
                 for _ in range(n): flat_types.append(char)
 
+            # Strip byte-order chars for iteration
+            fmt = fmt.lstrip('<>=!@')
+
             typed_params = []
             for i, val in enumerate(args.params):
                 if i >= len(flat_types): break
@@ -119,11 +125,18 @@ def main():
 
         # Post-execution decoding
         if fmt:
-            unpacked = struct.unpack(fmt, buf)
-            print("[+] Decoded Output Fields:")
+            print(f"[+] Format: {fmt}")
+
             val_idx = 0
-            format_parts = re.findall(r'(\d*)([a-zA-Z])', fmt)
+            unpacked = struct.unpack(fmt, buf)
+            format_parts = re.findall(r'(\d*)([a-zA-Z\?])', fmt)
+
+            print("[+] Decoded Output Fields:")
             for field_idx, (count, char) in enumerate(format_parts):
+                # Handle padding bytes 'x'
+                if char == 'x':
+                    continue
+
                 f_name = fields[field_idx] if field_idx < len(fields) else f"field_{field_idx}"
                 n = int(count) if count else 1
                 

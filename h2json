@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+# Author: Oscar Castello
+# License: MIT
+
 # This script converts C header files into JSON format for IOCTL definitions
 # Example: python3 h2json examples/tty.h tty.json
 
@@ -11,7 +14,7 @@ import struct
 # Mapping C types to Python 'struct' module format characters
 TYPE_MAP = {
     # 1 Byte: Booleans and Characters
-    'bool': '?',        'char': 'b',        'int8_t': 'b',      'i8': 'b',
+    'bool': '?',        'char': 'c',        'int8_t': 'b',      'i8': 'b',
     'uint8_t': 'B',     'u8': 'B',          'unsigned char': 'B',
 
     # 2 Bytes: Shorts and 16-bit Integers
@@ -37,6 +40,47 @@ TYPE_MAP = {
     'void **': 'P',     'unsigned char *': 'P', 'unsigned int *': 'P'
 }
 
+def aligned_fmt(fmt_parts):
+    """
+    Generates a format string using native '@' alignment rules 
+    but outputting a explicit '<' format with 'x' padding.
+    """
+    offset = 0
+    max_align = 1
+    out = []
+
+    # Flatten arrays (e.g., '32B' -> 'B', 'B', ...)
+    flat_parts = []
+    for part in fmt_parts:
+        match = re.match(r'(\d+)([a-zA-Z?])', part)
+        if match:
+            count, char = match.groups()
+            flat_parts.extend([char] * int(count))
+        else:
+            flat_parts.append(part)
+
+    for ch in flat_parts:
+        # Get size and alignment dynamically
+        size = struct.calcsize(f"@{ch}")
+        align = struct.calcsize(f"@b{ch}") - struct.calcsize(f"@{ch}")
+        max_align = max(max_align, align)
+
+        # Internal padding
+        pad = (align - (offset % align)) % align
+        if pad:
+            out.append('x' * pad)
+            offset += pad
+
+        out.append(ch)
+        offset += size
+
+    # Tail padding
+    tail_pad = (max_align - (offset % max_align)) % max_align
+    if tail_pad:
+        out.append('x' * tail_pad)
+
+    return ''.join(out)
+
 def parse_header(content):
     # Resolve #defines for constants (Magic/NR/Array Sizes)
     defines = {}
@@ -46,6 +90,7 @@ def parse_header(content):
 
     # Extract structs
     structs = {}
+    # Regex to capture struct body and name
     struct_pattern = re.compile(r'(?:typedef\s+)?struct(?:\s+(\w+))?\s*\{([^}]+)\}\s*(\w+)?;')
     
     for match in struct_pattern.finditer(content):
@@ -78,7 +123,7 @@ def parse_header(content):
                 fields.append(f_name.strip())
                 fmt += TYPE_MAP.get(c_type.strip(), 'I')
         
-        structs[struct_name] = {"format": fmt, "fields": fields}
+        structs[struct_name] = {"format": aligned_fmt(fmt), "fields": fields}
 
     # 3. Extract IOCTL definitions
     pattern_3 = re.compile(r'#define\s+(\w+)\s+_IO(WR|R|W)\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\)')
@@ -137,8 +182,9 @@ def main():
             print("Found:")
             for name, info in data.items():
                 params_str = ", ".join(info['fields']) if info['fields'] else "none"
+                size = struct.calcsize('@' + info['format']) if info['format'] else 0
                 print(f"  - {name:<40}")
-                print(f"    args: {params_str}")
+                print(f"    fmt: {info['format'] or '<empty>'}, size: {size}, args: {params_str}")
             
             print(f"[+] Total: {len(data)} IOCTLs identified.")
             print(f"[+] Saved to: {args.output}\n")
